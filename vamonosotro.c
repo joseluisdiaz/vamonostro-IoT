@@ -50,9 +50,10 @@
 
 
 #include "dev/i2cmaster.h"
+#include "dev/adxl345.h"
 #include "dev/light-ziglet.h"
 /*---------------------------------------------------------------------------*/
-#define SENSOR_READ_INTERVAL (CLOCK_SECOND / 2)
+#define SENSOR_READ_INTERVAL_LIGHT (CLOCK_SECOND / 2)
 
 // LIGHT EVENTS ...
 #define LOW_LIGHT 1
@@ -66,6 +67,20 @@
    low   |      med     | high
         050            300
  */
+
+static struct etimer et_light;
+
+process_event_t event_light_low;
+process_event_t event_light_mid;
+process_event_t event_light_high;
+
+/*---- MOTION ----*/
+
+static struct etimer et_motion;
+process_event_t event_motion_detected;
+
+#define SENSOR_READ_INTERVAL_MOTION (CLOCK_SECOND / 4)
+#define MOTION_TRESH 120
 
 /*----NETWORK----*/
 
@@ -113,20 +128,13 @@ print_local_addresses(void)
   }
 }
 
-
-
 PROCESS(light_event_handler, "Light event handler");
+PROCESS(motion_event_handler, "Motion  event handler");
 PROCESS(consumer, "Consumer");
 
 AUTOSTART_PROCESSES(&light_event_handler, &consumer);
 
-static struct etimer et;
-
-process_event_t event_light_low;
-process_event_t event_light_mid;
-process_event_t event_light_high;
-
-uint8_t to_range(uint16_t value) {
+uint8_t static to_range(uint16_t value) {
 
   if (value <= LOW_TRESH) {
     return LOW_LIGHT;
@@ -135,6 +143,75 @@ uint8_t to_range(uint16_t value) {
   }
 
   return HIGH_LIGHT;
+}
+
+uint8_t static motion_delta(int8_t x, int8_t y) {
+  int16_t aux = x - y;
+
+  printf("->> %d\n", aux);
+
+  aux = aux < 0 ? - aux : aux;
+
+  printf("+>> %d\n", aux);
+
+  return aux <= MOTION_TRESH ? 0 : 1;
+}
+
+PROCESS_THREAD(motion_event_handler, ev, data)
+{
+  PROCESS_BEGIN();
+
+  event_motion_detected = process_alloc_event();
+
+  static int8_t x_axis;
+  static int8_t y_axis;
+  static int8_t z_axis;
+
+  static int8_t last_x_axis;
+  static int8_t last_y_axis;
+  static int8_t last_z_axis;
+
+  static int8_t motion_detected = 0;
+  static int8_t counter = 0;
+
+  SENSORS_ACTIVATE(adxl345);
+
+  etimer_set(&et_motion, SENSOR_READ_INTERVAL_MOTION);
+
+  last_x_axis = adxl345.value(X_AXIS);
+  last_y_axis = adxl345.value(Y_AXIS);
+  last_z_axis = adxl345.value(Z_AXIS);
+
+  while(1) {
+
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et_motion));
+
+    /* Read the sensors */
+    x_axis = adxl345.value(X_AXIS);
+    y_axis = adxl345.value(Y_AXIS);
+    z_axis = adxl345.value(Z_AXIS);
+
+    if (!motion_detected && (motion_delta(x_axis, last_x_axis) ||
+                             motion_delta(y_axis, last_y_axis) ||
+                             motion_delta(z_axis, last_z_axis))) {
+      //emit
+      process_post(PROCESS_BROADCAST, event_motion_detected, 0);
+      counter = 20; // ~ 5s
+      motion_detected = 1;
+    }
+
+    if (motion_detected && --counter <= 0) {
+      motion_detected = 0;
+    }
+
+    printf("Acceleration: X %+4d Y %+4d Z %+4d (curr)\n", x_axis, y_axis, z_axis);
+    printf("Acceleration: X %+4d Y %+4d Z %+4d (last)\n", last_x_axis, last_y_axis, last_z_axis);
+    printf("counter: %d, motion_detected: %d\n\n", counter, motion_detected);
+
+    etimer_reset(&et_motion);
+  }
+
+  PROCESS_END();
 }
 
 /*---------------------------------------------------------------------------*/
@@ -155,8 +232,8 @@ PROCESS_THREAD(light_event_handler, ev, data)
   i2c_setrate(I2C_PRESC_100KHZ_LSB, I2C_PRESC_100KHZ_MSB);
 
   while(1) {
-    etimer_set(&et, SENSOR_READ_INTERVAL);
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+    etimer_set(&et_light, SENSOR_READ_INTERVAL_LIGHT);
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et_light));
     uint16_t light = light_ziglet_read();
     uint16_t value = to_range(light);
 
@@ -187,7 +264,7 @@ PROCESS_THREAD(consumer, ev, data)
   PROCESS_BEGIN();
 
   msg.id      = 0xAB;
-  msg.light   = 0x42;
+  msg.light   = 0x0;
 
   printf("Process consumer started\n");
 
@@ -219,12 +296,14 @@ PROCESS_THREAD(consumer, ev, data)
                                        UIP_HTONS(client_conn->rport));
 
   while(1) {
-    PROCESS_WAIT_EVENT_UNTIL((ev == event_light_low) || (ev == event_light_mid) || (ev == event_light_high));
+    PROCESS_WAIT_EVENT_UNTIL((ev == event_light_low) ||
+                             (ev == event_light_mid) ||
+                             (ev == event_light_high) ||
+                             (ev == event_motion_detected));
 
     if (ev == event_light_low) {
       printf("LOW\n");
       msg.light = 10;
-
     }
 
     if (ev == event_light_mid) {
@@ -236,6 +315,11 @@ PROCESS_THREAD(consumer, ev, data)
       printf("HIGH\n");
       msg.light = 30;
     }
+
+    if (ev == event_motion_detected) {
+      printf("MOTION DETECTED\n");      
+    }
+
     send_packet();
 
   }
