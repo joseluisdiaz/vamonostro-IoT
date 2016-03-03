@@ -42,7 +42,8 @@
 /* This data structure is used to store the packet content (payload) */
 struct my_msg_t {
   uint8_t  id;
-  uint8_t  light;
+  uint8_t  key;
+  uint16_t  value;
 };
 /*---------------------------------------------------------------------------*/
 

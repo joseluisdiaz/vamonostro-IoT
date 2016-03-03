@@ -52,30 +52,22 @@
 #include "dev/i2cmaster.h"
 #include "dev/adxl345.h"
 #include "dev/light-ziglet.h"
+
+// ALTA MACRO para ALTA MOTA
+#define DELTA(X, Y) (X-Y < 0 ? -(X-Y) : X-Y)
+
 /*---------------------------------------------------------------------------*/
 #define SENSOR_READ_INTERVAL_LIGHT (CLOCK_SECOND / 2)
 
 // LIGHT EVENTS ...
-#define LOW_LIGHT 1
-#define MID_LIGHT 2
-#define HIGH_LIGHT 3
-
-#define LOW_TRESH 50
-#define HIGH_TRESH 300
-
-/*
-   low   |      med     | high
-        050            300
- */
+#define LIGHT_TRESH 300
 
 static struct etimer et_light;
 
-process_event_t event_light_low;
-process_event_t event_light_mid;
-process_event_t event_light_high;
+process_event_t event_light_detected;
+
 
 /*---- MOTION ----*/
-
 static struct etimer et_motion;
 process_event_t event_motion_detected;
 
@@ -94,11 +86,11 @@ static void send_packet()
 {
 
   /* Print the sensor data */
-  printf("ID: %u, light: %u\n", msg.id, msg.light);
+  printf("key: %u, value: %u\n", msg.key, msg.value);
   /* Print the sensor data */
 
   /* Convert to network byte order as expected by the UDPServer application */
-  //  msg.light = UIP_HTONS(msg.light);
+  msg.value = UIP_HTONS(msg.value);
 
   printf("Send readings to");
   PRINT6ADDR(&server_ipaddr);
@@ -128,34 +120,13 @@ print_local_addresses(void)
   }
 }
 
+
 PROCESS(light_event_handler, "Light event handler");
 PROCESS(motion_event_handler, "Motion  event handler");
 PROCESS(consumer, "Consumer");
 
-AUTOSTART_PROCESSES(&light_event_handler, &consumer);
-
-uint8_t static to_range(uint16_t value) {
-
-  if (value <= LOW_TRESH) {
-    return LOW_LIGHT;
-  } else if (value <= HIGH_TRESH) {
-    return MID_LIGHT;
-  }
-
-  return HIGH_LIGHT;
-}
-
-uint8_t static motion_delta(int8_t x, int8_t y) {
-  int16_t aux = x - y;
-
-  printf("->> %d\n", aux);
-
-  aux = aux < 0 ? - aux : aux;
-
-  printf("+>> %d\n", aux);
-
-  return aux <= MOTION_TRESH ? 0 : 1;
-}
+//AUTOSTART_PROCESSES(&light_event_handler, &consumer);
+AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
 
 PROCESS_THREAD(motion_event_handler, ev, data)
 {
@@ -191,9 +162,9 @@ PROCESS_THREAD(motion_event_handler, ev, data)
     y_axis = adxl345.value(Y_AXIS);
     z_axis = adxl345.value(Z_AXIS);
 
-    if (!motion_detected && (motion_delta(x_axis, last_x_axis) ||
-                             motion_delta(y_axis, last_y_axis) ||
-                             motion_delta(z_axis, last_z_axis))) {
+    if (!motion_detected && ((DELTA(x_axis, last_x_axis) +
+                              DELTA(y_axis, last_y_axis) +
+                              DELTA(z_axis, last_z_axis)) > MOTION_TRESH)) {
       //emit
       process_post(PROCESS_BROADCAST, event_motion_detected, 0);
       counter = 20; // ~ 5s
@@ -203,10 +174,6 @@ PROCESS_THREAD(motion_event_handler, ev, data)
     if (motion_detected && --counter <= 0) {
       motion_detected = 0;
     }
-
-    printf("Acceleration: X %+4d Y %+4d Z %+4d (curr)\n", x_axis, y_axis, z_axis);
-    printf("Acceleration: X %+4d Y %+4d Z %+4d (last)\n", last_x_axis, last_y_axis, last_z_axis);
-    printf("counter: %d, motion_detected: %d\n\n", counter, motion_detected);
 
     etimer_reset(&et_motion);
   }
@@ -219,40 +186,33 @@ PROCESS_THREAD(light_event_handler, ev, data)
 {
   PROCESS_BEGIN();
 
-  PROCESS_PAUSE();
-
-  static uint16_t last_value = -1;
-
-  event_light_low = process_alloc_event();
-  event_light_mid = process_alloc_event();
-  event_light_high = process_alloc_event();
+  event_light_detected = process_alloc_event();
 
   /* Initialize driver and set a slower data rate */
   light_ziglet_init();
-  i2c_setrate(I2C_PRESC_100KHZ_LSB, I2C_PRESC_100KHZ_MSB);
+
+  static uint16_t last_light;
+  static uint16_t light;
+
+  last_light = light_ziglet_read();
+
+  etimer_set(&et_light, SENSOR_READ_INTERVAL_LIGHT);
+
 
   while(1) {
-    etimer_set(&et_light, SENSOR_READ_INTERVAL_LIGHT);
+
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et_light));
-    uint16_t light = light_ziglet_read();
-    uint16_t value = to_range(light);
+
+    light = light_ziglet_read();
 
     printf("Light = %u\n", light);
 
-    if (value != last_value) {
-      last_value = value;
-      switch(value) {
-      case LOW_LIGHT:
-        process_post(PROCESS_BROADCAST, event_light_low, 0);
-        break;
-      case MID_LIGHT:
-        process_post(PROCESS_BROADCAST, event_light_mid, 0);
-        break;
-      case HIGH_LIGHT:
-        process_post(PROCESS_BROADCAST, event_light_high, 0);
-        break;
-      }
+    if (DELTA(light, last_light) > LIGHT_TRESH) {
+      process_post(PROCESS_BROADCAST, event_light_detected, &light);
+      last_light = light;
     }
+
+    etimer_reset(&et_light);
 
   }
   PROCESS_END();
@@ -263,8 +223,9 @@ PROCESS_THREAD(consumer, ev, data)
 {
   PROCESS_BEGIN();
 
-  msg.id      = 0xAB;
-  msg.light   = 0x0;
+  msg.id = 0x42;
+  msg.key = 0;
+  msg.value = 0;
 
   printf("Process consumer started\n");
 
@@ -280,12 +241,13 @@ PROCESS_THREAD(consumer, ev, data)
   /* Print the node's addresses */
   print_local_addresses();
 
-  client_conn = udp_new(NULL, UIP_HTONS(UDP_SERVER_PORT), NULL); 
+  client_conn = udp_new(NULL, UIP_HTONS(UDP_SERVER_PORT), NULL);
 
   if(client_conn == NULL) {
     printf("No UDP connection available, exiting the process!\n");
     PROCESS_EXIT();
   }
+
 
   /* This function binds a UDP connection to a specified local por */
   udp_bind(client_conn, UIP_HTONS(UDP_CLIENT_PORT)); 
@@ -295,29 +257,23 @@ PROCESS_THREAD(consumer, ev, data)
   printf(" local/remote port %u/%u\n", UIP_HTONS(client_conn->lport),
                                        UIP_HTONS(client_conn->rport));
 
+
   while(1) {
-    PROCESS_WAIT_EVENT_UNTIL((ev == event_light_low) ||
-                             (ev == event_light_mid) ||
-                             (ev == event_light_high) ||
+
+
+    PROCESS_WAIT_EVENT_UNTIL((ev == event_light_detected) ||
                              (ev == event_motion_detected));
 
-    if (ev == event_light_low) {
-      printf("LOW\n");
-      msg.light = 10;
-    }
-
-    if (ev == event_light_mid) {
-      printf("MID\n");
-      msg.light = 20;
-    }
-
-    if (ev == event_light_high) {
-      printf("HIGH\n");
-      msg.light = 30;
+    if (ev == event_light_detected) {
+      printf("LEVEL LIGHT CHANGE\n");
+      msg.key = 1;
+      msg.value = *((uint8_t *)data);
     }
 
     if (ev == event_motion_detected) {
-      printf("MOTION DETECTED\n");      
+      printf("MOTION DETECTED\n");
+      msg.key = 2;
+      msg.value = 0;
     }
 
     send_packet();
