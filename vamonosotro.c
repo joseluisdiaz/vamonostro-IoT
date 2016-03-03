@@ -47,7 +47,7 @@
 #include "net/ipv6/uip-ds6.h"
 #include "net/ip/uip-udp-packet.h"
 #include "sys/ctimer.h"
-
+#include "dev/leds.h"
 
 #include "dev/i2cmaster.h"
 #include "dev/adxl345.h"
@@ -72,7 +72,7 @@ static struct etimer et_motion;
 process_event_t event_motion_detected;
 
 #define SENSOR_READ_INTERVAL_MOTION (CLOCK_SECOND / 4)
-#define MOTION_TRESH 120
+#define MOTION_TRESH 224
 
 /*----NETWORK----*/
 
@@ -126,7 +126,8 @@ PROCESS(motion_event_handler, "Motion  event handler");
 PROCESS(consumer, "Consumer");
 
 //AUTOSTART_PROCESSES(&light_event_handler, &consumer);
-AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
+AUTOSTART_PROCESSES(&motion_event_handler, &consumer);
+//AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
 
 PROCESS_THREAD(motion_event_handler, ev, data)
 {
@@ -162,6 +163,11 @@ PROCESS_THREAD(motion_event_handler, ev, data)
     y_axis = adxl345.value(Y_AXIS);
     z_axis = adxl345.value(Z_AXIS);
 
+    printf("%d %d %d\n%d %d %d\n%d\n\n\n",
+           x_axis, y_axis, z_axis,
+           last_x_axis, last_y_axis, last_z_axis,
+           DELTA(last_x_axis, x_axis) + DELTA(last_y_axis, y_axis) + DELTA(last_z_axis,z_axis));
+
     if (!motion_detected && ((DELTA(x_axis, last_x_axis) +
                               DELTA(y_axis, last_y_axis) +
                               DELTA(z_axis, last_z_axis)) > MOTION_TRESH)) {
@@ -174,6 +180,10 @@ PROCESS_THREAD(motion_event_handler, ev, data)
     if (motion_detected && --counter <= 0) {
       motion_detected = 0;
     }
+
+    last_x_axis = x_axis;
+    last_y_axis = y_axis;
+    last_z_axis = z_axis;
 
     etimer_reset(&et_motion);
   }
@@ -268,12 +278,14 @@ PROCESS_THREAD(consumer, ev, data)
       printf("LEVEL LIGHT CHANGE\n");
       msg.key = 1;
       msg.value = *((uint8_t *)data);
+      leds_toggle(LEDS_BLUE);
     }
 
     if (ev == event_motion_detected) {
       printf("MOTION DETECTED\n");
       msg.key = 2;
       msg.value = 0;
+      leds_toggle(LEDS_RED);
     }
 
     send_packet();
