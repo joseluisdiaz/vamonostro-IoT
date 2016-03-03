@@ -58,33 +58,27 @@
 
 /*---------------------------------------------------------------------------*/
 #define SENSOR_READ_INTERVAL_LIGHT (CLOCK_SECOND / 2)
+#define SENSOR_READ_INTERVAL_MOTION (CLOCK_SECOND / 4)
 
-// LIGHT EVENTS ...
+/*---- LIGHT ----*/
 #define LIGHT_TRESH 300
-
 static struct etimer et_light;
-
 process_event_t event_light_detected;
 
-
 /*---- MOTION ----*/
+#define MOTION_TRESH 224
 static struct etimer et_motion;
 process_event_t event_motion_detected;
 
-#define SENSOR_READ_INTERVAL_MOTION (CLOCK_SECOND / 4)
-#define MOTION_TRESH 224
-
 /*----NETWORK----*/
-
 static struct my_msg_t msg;
 static struct my_msg_t *msgPtr = &msg;
 
 static struct uip_udp_conn *client_conn;
 static uip_ipaddr_t server_ipaddr;
 
-static void send_packet()
-{
 
+static void send_packet(){
   /* Print the sensor data */
   printf("key: %u, value: %u\n", msg.key, msg.value);
   /* Print the sensor data */
@@ -99,9 +93,7 @@ static void send_packet()
   uip_udp_packet_sendto(client_conn, msgPtr, sizeof(msg), &server_ipaddr, UIP_HTONS(UDP_SERVER_PORT));
 }
 
-static void
-print_local_addresses(void)
-{
+static void print_local_addresses(void) {
   int i;
   uint8_t state;
 
@@ -121,16 +113,20 @@ print_local_addresses(void)
 }
 
 
+/*---- PROCESS ----*/
 PROCESS(light_event_handler, "Light event handler");
 PROCESS(motion_event_handler, "Motion  event handler");
 PROCESS(consumer, "Consumer");
 
+/*---- START PROCESSES ----*/
 //AUTOSTART_PROCESSES(&light_event_handler, &consumer);
 AUTOSTART_PROCESSES(&motion_event_handler, &consumer);
 //AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
 
-PROCESS_THREAD(motion_event_handler, ev, data)
-{
+
+/*---- THREAD MOTION SENSOR ----*/
+PROCESS_THREAD(motion_event_handler, ev, data) {
+
   PROCESS_BEGIN();
 
   event_motion_detected = process_alloc_event();
@@ -191,9 +187,8 @@ PROCESS_THREAD(motion_event_handler, ev, data)
   PROCESS_END();
 }
 
-/*---------------------------------------------------------------------------*/
-PROCESS_THREAD(light_event_handler, ev, data)
-{
+/*---- THREAD LIGHT SENSOR ----*/
+PROCESS_THREAD(light_event_handler, ev, data) {
   PROCESS_BEGIN();
 
   event_light_detected = process_alloc_event();
@@ -228,7 +223,7 @@ PROCESS_THREAD(light_event_handler, ev, data)
   PROCESS_END();
 }
 
-
+/*---- THREAD CONSUMER ----*/
 PROCESS_THREAD(consumer, ev, data)
 {
   PROCESS_BEGIN();
@@ -258,7 +253,6 @@ PROCESS_THREAD(consumer, ev, data)
     PROCESS_EXIT();
   }
 
-
   /* This function binds a UDP connection to a specified local por */
   udp_bind(client_conn, UIP_HTONS(UDP_CLIENT_PORT)); 
 
@@ -269,8 +263,6 @@ PROCESS_THREAD(consumer, ev, data)
 
 
   while(1) {
-
-
     PROCESS_WAIT_EVENT_UNTIL((ev == event_light_detected) ||
                              (ev == event_motion_detected));
 
@@ -280,7 +272,6 @@ PROCESS_THREAD(consumer, ev, data)
       msg.value = *((uint8_t *)data);
       leds_toggle(LEDS_BLUE);
     }
-
     if (ev == event_motion_detected) {
       printf("MOTION DETECTED\n");
       msg.key = 2;
@@ -291,7 +282,6 @@ PROCESS_THREAD(consumer, ev, data)
     send_packet();
 
   }
-
   /* This is the end of the process, we tell the system we are done.  Even if
    * we won't reach this due to the "while(...)" we need to include it
    */
