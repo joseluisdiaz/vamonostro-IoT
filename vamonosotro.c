@@ -53,6 +53,144 @@
 #include "dev/adxl345.h"
 #include "dev/light-ziglet.h"
 
+/* libraries for ubidots works to works */
+//#include "sys/process.h"
+//#include "sys/etimer.h"
+//#include "ubidots.h"
+//#include "dev/tmp102.h"
+//#include <string.h>
+
+/*------------- UBIDOTS PART -------------------*/
+/*---------------------------------------------------------------------------*/
+/* Sanity check */
+#if !defined(UBIDOTS_DEMO_CONF_LIGHT) || !defined(UBIDOTS_DEMO_CONF_MOTION)
+#error "UBIDOTS_DEMO_CONF_LIGHT or UBIDOTS_DEMO_CONF_MOTION undefined."
+/*#if !defined(UBIDOTS_DEMO_CONF_TEMPERATURE) || !defined(UBIDOTS_DEMO_CONF_SEQUENCE)
+#error "UBIDOTS_DEMO_CONF_TEMPERATURE or UBIDOTS_DEMO_CONF_SEQUENCE undefined."*/
+#error "Make sure you have followed the steps in the README"
+#endif
+/*---------------------------------------------------------------------------*/
+/* POST period */
+#define POST_PERIOD (CLOCK_SECOND * 30)
+static struct etimer et;
+/*---------------------------------------------------------------------------*/
+#define VARIABLE_BUF_LEN 16
+static unsigned int sequence;
+
+static char variable_buffer[VARIABLE_BUF_LEN];
+/*---------------------------------------------------------------------------*/
+/*
+ * 'List' of HTTP reply headers that we want to be notified about.
+ * Terminate with NULL
+ */
+static const char *headers[] = {
+  "Vary",
+  NULL
+};
+/*---------------------------------------------------------------------------*/
+/*
+ * An example of how to POST one more more values to the same variable. This
+ * primarily shows how to use the value argument depending on whether you
+ * want to send a JSON string, number or boolean.
+ */
+static void post_sequence_number(void){
+  if(ubidots_prepare_post(UBIDOTS_DEMO_CONF_SEQUENCE) == UBIDOTS_ERROR) {
+    printf("post_variable: ubidots_prepare_post failed\n");
+  }
+
+  memset(variable_buffer, 0, VARIABLE_BUF_LEN);
+
+  /*
+   * Write your value to the buffer. The contents of the buffer will be used
+   * verbatim as the value of the variable in your JSON string. So, if you
+   * store a number in the buffer this will become a JSON number. If you
+   * enclose the value in double quotes, this will essentially be a JSON string
+   *
+   * Some examples
+   * To send your value as a JSON number:
+   * snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", sequence);
+   *
+   * To send your value as a JSON string:
+   * snprintf(variable_buffer, VARIABLE_BUF_LEN, "\"%u\"", sequence);
+   *
+   * To send a JSON boolean:
+   * ubidots_enqueue_value(NULL, "true");
+   */
+  snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", sequence);
+
+  /* Append the contents of the buffer to your HTTP POST's payload */
+  if(ubidots_enqueue_value(NULL, variable_buffer) == UBIDOTS_ERROR) {
+    printf("post_variable (string): ubidots_enqueue_value failed\n");
+  }
+
+  /*
+   * You can make a series of calls to ubidots_enqueue_value() here, as long
+   * as they all have NULL as the first argument. In doing so, you can send
+   * multiple values for the same variable
+   */
+  if(ubidots_post() == UBIDOTS_ERROR) {
+    printf("post_variable: ubidots_post failed\n");
+  }
+}
+/*---------------------------------------------------------------------------*/
+/*
+ * An example of how to post a collection: multiple different variables in
+ * a single HTTP POST using {"variable":k,"value":v} pairs
+ */
+static void post_collection(void){
+  uint16_t temp;
+  if(ubidots_prepare_post(NULL) == UBIDOTS_ERROR) {
+    printf("post_collection: ubidots_prepare_post failed\n");
+  }
+
+  /* Encode and enqueue the uptime as a JSON number */
+  memset(variable_buffer, 0, VARIABLE_BUF_LEN);
+  temp = tmp102_read_temp_x100();  
+  snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", temp);
+
+  if(ubidots_enqueue_value(UBIDOTS_DEMO_CONF_TEMPERATURE, variable_buffer) == UBIDOTS_ERROR) {
+    printf("post_collection: ubidots_prepare_post failed\n");
+  }
+
+  /* And the sequence counter, again as a JSON number */
+  memset(variable_buffer, 0, VARIABLE_BUF_LEN);
+  snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", sequence);
+
+  if(ubidots_enqueue_value(UBIDOTS_DEMO_CONF_SEQUENCE, variable_buffer) == UBIDOTS_ERROR) {
+    printf("post_collection: ubidots_prepare_post failed\n");
+  }
+
+  if(ubidots_post() == UBIDOTS_ERROR) {
+    printf("post_collection: ubidots_prepare_post failed\n");
+  }
+}
+/*---------------------------------------------------------------------------*/
+/*
+ * This is how to process the HTTP reply from the Ubidots server. In a real
+ * scenario, we may wish to do something useful here, e.g. to test whether
+ * the POST succeeded.
+ *
+ * This function here simply prints the entire thing, demonstrating how to use
+ * the engine's API.
+ */
+static void print_reply(ubidots_reply_part_t *r) {
+  switch(r->type) {
+  case UBIDOTS_REPLY_TYPE_HTTP_STATUS:
+    printf("HTTP Status: %ld\n", *((long int *)r->content));
+    break;
+  case UBIDOTS_REPLY_TYPE_HTTP_HEADER:
+    printf("H: '%s'\n", (char *)r->content);
+    break;
+  case UBIDOTS_REPLY_TYPE_PAYLOAD:
+    printf("P: '%s'\n", (char *)r->content);
+    break;
+  default:
+    printf("Unknown reply type\n");
+    break;
+  }
+}
+/*------------------------------ auxiliars functions for UBIDOTS ENDS ---------------------------------------------*/
+
 // ALTA MACRO para ALTA MOTA
 #define DELTA(X, Y) (X-Y < 0 ? -(X-Y) : X-Y)
 
@@ -113,14 +251,18 @@ static void print_local_addresses(void) {
 }
 
 
+
+
 /*---- PROCESS ----*/
 PROCESS(light_event_handler, "Light event handler");
 PROCESS(motion_event_handler, "Motion  event handler");
 PROCESS(consumer, "Consumer");
+PROCESS(ubidots_demo_process, "Ubidots demo process"); // PROCESO PARA UBIDOTS
 
 /*---- START PROCESSES ----*/
 //AUTOSTART_PROCESSES(&light_event_handler, &consumer);
 AUTOSTART_PROCESSES(&motion_event_handler, &consumer);
+//AUTOSTART_PROCESSES(&ubidots_demo_process); // PROCESO PARA UBIDOTS
 //AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
 
 
@@ -287,5 +429,41 @@ PROCESS_THREAD(consumer, ev, data)
    */
   PROCESS_END();
 }
+
+/*----------------------------- THREAD THAT LOAD DATA TO UBIDOTS ----------------------------------------------*/
+PROCESS_THREAD(ubidots_demo_process, ev, data)
+{
+  PROCESS_BEGIN();
+
+  tmp102_init();
+  ubidots_init(&ubidots_demo_process, headers);
+
+  sequence = 0;
+
+  while(1) {
+
+    PROCESS_YIELD();
+
+    if(ev == ubidots_event_established ||
+       (ev == PROCESS_EVENT_TIMER && data == &et)) {
+      leds_on(LEDS_GREEN);
+      sequence++;
+
+      if(sequence & 1) {
+        post_sequence_number();
+      } else {
+        post_collection();
+      }
+    } else if(ev == ubidots_event_post_sent) {
+      leds_off(LEDS_GREEN);
+      etimer_set(&et, POST_PERIOD);
+    } else if(ev == ubidots_event_post_reply_received) {
+      print_reply((ubidots_reply_part_t *)data);
+    }
+  }
+
+  PROCESS_END();
+}
+/*---------------------------------------------------------------------------*/
 
 /*---------------------------------------------------------------------------*/
