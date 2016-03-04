@@ -366,7 +366,7 @@ PROCESS_THREAD(light_event_handler, ev, data) {
 }
 
 /*---- THREAD CONSUMER ----*/
-PROCESS_THREAD(consumer, ev, data)
+PROCESS_THREAD(consumer_mqtt, ev, data)
 {
   PROCESS_BEGIN();
 
