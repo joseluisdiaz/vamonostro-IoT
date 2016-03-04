@@ -12,7 +12,7 @@ CONTIKI_WITH_IPV6 = 1
 CONTIKI_PROJECT = vamonosotro.c
 
 CONTIKI_SOURCEFILES += sht11.c reed-sensor.c sht25.c tlc59116.c light-ziglet.c \
-                       relay-phidget.c sht11.c sht11-sensor.c bmpx8x.c 
+                       sht11.c sht11-sensor.c ubidots.c
 
 MODULES += dev/sht11
 
@@ -20,5 +20,6 @@ CFLAGS += -DPROJECT_CONF_H=\"project-conf.h\"
 
 all: $(CONTIKI_PROJECT)
 CONTIKI = ../../..
-CONTIKI_WITH_RIME = 1
+#CONTIKI_WITH_RIME = 1
+
 include $(CONTIKI)/Makefile.include

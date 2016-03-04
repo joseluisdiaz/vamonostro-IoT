@@ -54,28 +54,21 @@
 #include "dev/light-ziglet.h"
 
 /* libraries for ubidots works to works */
-//#include "sys/process.h"
-//#include "sys/etimer.h"
-//#include "ubidots.h"
-//#include "dev/tmp102.h"
-//#include <string.h>
+#include "ubidots.h"
+#include <string.h>
 
 /*------------- UBIDOTS PART -------------------*/
 /*---------------------------------------------------------------------------*/
-/* Sanity check */
-#if !defined(UBIDOTS_DEMO_CONF_LIGHT) || !defined(UBIDOTS_DEMO_CONF_MOTION)
-#error "UBIDOTS_DEMO_CONF_LIGHT or UBIDOTS_DEMO_CONF_MOTION undefined."
-/*#if !defined(UBIDOTS_DEMO_CONF_TEMPERATURE) || !defined(UBIDOTS_DEMO_CONF_SEQUENCE)
-#error "UBIDOTS_DEMO_CONF_TEMPERATURE or UBIDOTS_DEMO_CONF_SEQUENCE undefined."*/
-#error "Make sure you have followed the steps in the README"
-#endif
 /*---------------------------------------------------------------------------*/
 /* POST period */
 #define POST_PERIOD (CLOCK_SECOND * 30)
-static struct etimer et;
 /*---------------------------------------------------------------------------*/
 #define VARIABLE_BUF_LEN 16
 static unsigned int sequence;
+
+static struct etimer et_ubidots;
+
+#define POST_PERIOD (CLOCK_SECOND * 30)
 
 static char variable_buffer[VARIABLE_BUF_LEN];
 /*---------------------------------------------------------------------------*/
@@ -94,7 +87,8 @@ static const char *headers[] = {
  * want to send a JSON string, number or boolean.
  */
 static void post_sequence_number(void){
-  if(ubidots_prepare_post(UBIDOTS_DEMO_CONF_SEQUENCE) == UBIDOTS_ERROR) {
+
+  if(ubidots_prepare_post(UBIDOTS_SEQUENCE_ID) == UBIDOTS_ERROR) {
     printf("post_variable: ubidots_prepare_post failed\n");
   }
 
@@ -130,38 +124,6 @@ static void post_sequence_number(void){
    */
   if(ubidots_post() == UBIDOTS_ERROR) {
     printf("post_variable: ubidots_post failed\n");
-  }
-}
-/*---------------------------------------------------------------------------*/
-/*
- * An example of how to post a collection: multiple different variables in
- * a single HTTP POST using {"variable":k,"value":v} pairs
- */
-static void post_collection(void){
-  uint16_t temp;
-  if(ubidots_prepare_post(NULL) == UBIDOTS_ERROR) {
-    printf("post_collection: ubidots_prepare_post failed\n");
-  }
-
-  /* Encode and enqueue the uptime as a JSON number */
-  memset(variable_buffer, 0, VARIABLE_BUF_LEN);
-  temp = tmp102_read_temp_x100();  
-  snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", temp);
-
-  if(ubidots_enqueue_value(UBIDOTS_DEMO_CONF_TEMPERATURE, variable_buffer) == UBIDOTS_ERROR) {
-    printf("post_collection: ubidots_prepare_post failed\n");
-  }
-
-  /* And the sequence counter, again as a JSON number */
-  memset(variable_buffer, 0, VARIABLE_BUF_LEN);
-  snprintf(variable_buffer, VARIABLE_BUF_LEN, "%u", sequence);
-
-  if(ubidots_enqueue_value(UBIDOTS_DEMO_CONF_SEQUENCE, variable_buffer) == UBIDOTS_ERROR) {
-    printf("post_collection: ubidots_prepare_post failed\n");
-  }
-
-  if(ubidots_post() == UBIDOTS_ERROR) {
-    printf("post_collection: ubidots_prepare_post failed\n");
   }
 }
 /*---------------------------------------------------------------------------*/
@@ -255,16 +217,15 @@ static void print_local_addresses(void) {
 
 /*---- PROCESS ----*/
 PROCESS(light_event_handler, "Light event handler");
-PROCESS(motion_event_handler, "Motion  event handler");
-PROCESS(consumer, "Consumer");
-PROCESS(ubidots_demo_process, "Ubidots demo process"); // PROCESO PARA UBIDOTS
+PROCESS(motion_event_handler, "Motion event handler");
+PROCESS(consumer_mqtt, "Consumer");
+PROCESS(consumer_ubidots, "Consumer Ubidots");
 
 /*---- START PROCESSES ----*/
-//AUTOSTART_PROCESSES(&light_event_handler, &consumer);
-AUTOSTART_PROCESSES(&motion_event_handler, &consumer);
-//AUTOSTART_PROCESSES(&ubidots_demo_process); // PROCESO PARA UBIDOTS
-//AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer);
-
+//AUTOSTART_PROCESSES(&light_event_handler, &consumer_mqtt);
+AUTOSTART_PROCESSES(&motion_event_handler, &consumer_mqtt);
+//AUTOSTART_PROCESSES(&motion_event_handler, &light_event_handler, &consumer_mqtt);
+//AUTOSTART_PROCESSES(&consumer_ubidots);
 
 /*---- THREAD MOTION SENSOR ----*/
 PROCESS_THREAD(motion_event_handler, ev, data) {
@@ -344,7 +305,6 @@ PROCESS_THREAD(light_event_handler, ev, data) {
   last_light = light_ziglet_read();
 
   etimer_set(&et_light, SENSOR_READ_INTERVAL_LIGHT);
-
 
   while(1) {
 
@@ -431,12 +391,11 @@ PROCESS_THREAD(consumer_mqtt, ev, data)
 }
 
 /*----------------------------- THREAD THAT LOAD DATA TO UBIDOTS ----------------------------------------------*/
-PROCESS_THREAD(ubidots_demo_process, ev, data)
+PROCESS_THREAD(consumer_ubidots, ev, data)
 {
   PROCESS_BEGIN();
 
-  tmp102_init();
-  ubidots_init(&ubidots_demo_process, headers);
+  ubidots_init(&consumer_ubidots, headers);
 
   sequence = 0;
 
@@ -444,19 +403,17 @@ PROCESS_THREAD(ubidots_demo_process, ev, data)
 
     PROCESS_YIELD();
 
-    if(ev == ubidots_event_established ||
-       (ev == PROCESS_EVENT_TIMER && data == &et)) {
-      leds_on(LEDS_GREEN);
-      sequence++;
+    if ( ev == ubidots_event_established ||
+         (ev == PROCESS_EVENT_TIMER && data == &et_ubidots)) {
 
-      if(sequence & 1) {
-        post_sequence_number();
-      } else {
-        post_collection();
-      }
+      leds_on(LEDS_GREEN);
+
+      sequence++;
+      post_sequence_number();
+
     } else if(ev == ubidots_event_post_sent) {
       leds_off(LEDS_GREEN);
-      etimer_set(&et, POST_PERIOD);
+      etimer_set(&et_ubidots, POST_PERIOD);
     } else if(ev == ubidots_event_post_reply_received) {
       print_reply((ubidots_reply_part_t *)data);
     }
